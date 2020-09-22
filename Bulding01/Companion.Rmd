@@ -1,0 +1,172 @@
+---
+title: "Building One - Companion Notes"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Reading the data
+
+We will have five datasets to build our application. We will read them using the "readr" library (install it if you do not have it).  We will also be using tidyverse to manage the data.
+
+```{r}
+library(readr)
+library(tidyverse)
+
+student_records <- read_csv("data/student_records.csv")
+student_course <- read_csv("data/student_course.csv")
+instructor_evaluation <- read_csv("data/instructor_evaluation.csv")
+course_evaluation <- read_csv("data/course_evaluation.csv")
+course_list <- read_csv("data/course_list.csv")
+
+```
+<hr>
+## Understanding the data
+
+Now we will examine each dataset.  We will start with "student_record":
+
+```{r}
+head(student_records)
+```
+
+Student record has personal information about each student with the following columns (they are in a different order in the dataset):
+
+* "ANONID": ID of the student
+* "SEX": Declared sex of the student
+* "HSGPA": High School GPA of the student
+* "LAST_ACT_ENGL_SCORE": Last score in ACT English Test  
+* "LAST_ACT_MATH_SCORE": Last score in ACT Math Test
+* "LAST_ACT_READ_SCORE": Last score in ACT Reading Test
+* "LAST_ACT_SCIRE_SCORE": Last score in ACT Science Test
+* "LAST_ACT_COMP_SCORE":  Last score in ACT Writing Test
+* "LAST_SATI_VERB_SCORE": Last score in SAT Language Test
+* "LAST_SATI_MATH_SCORE": Last score in SAT Math Test  
+* "LAST_SATI_TOTAL_SCORE":Last socre in SAT Test
+* "MAJOR1_DESCR": Name of the major of the students, if declared 
+* "ADMIT_TERM": Term in which the student was admitted           
+
+Now lets see "student_course".
+
+```{r}
+head(student_course)
+```
+
+This dataset contains information about the courses taken by the students, their grade and their instructor.
+
+* "ANONID": ID of the student
+* "SUBJECT": Name of the course
+* "CATALOG_NBR": ID of the course
+* "GRD_PTS_PER_UNIT": Grade of the Student
+* "GPAO": GPA of the student at that moment
+* "DIV": Department of the course             
+* "ANON_INSTR_ID": Id of the instructor
+* "TERM": Term in which the course was taken
+
+Now let's explore "instructor_evaluation":
+
+```{r}
+head(instructor_evaluation)
+```
+
+This dataset contains the information about the student evaluation of the instructors:
+
+* "anon_id": Id of the instructor
+* "overall": Average answer from 1(Very Poor) to 5(Excellent) to the question: "Overall evaluation of the instructor"
+* "environment": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The instructor provided an environment that was conducive to learning."
+* "feedback": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The instructor provided helpful feedback on assessed class components (e.g., exams, papers)."
+* "async": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The instructor incorporated
+the asynchronous material into our live session discussion"
+* "opportunities": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The instructor regularly
+provided opportunities for students to engage with each other."
+* "sensitiviy": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The instructor demonstrated
+sensitivity to students? needs and diverse life experiences."
+
+Then we will see the  "course_evaluation" dataset: 
+
+```{r}
+head(course_evaluation)
+```
+
+This file contains the average student evaluation for each course.
+
+* "course_id": ID of the course
+* "overall": Average answer from 1(Very Poor) to 5(Excellent) to the question: "Overall evaluation of the instructor"
+* "objectives": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The course objectives were clearly stated."
+* "organized": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The course was well organized."
+* "stimulating": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The course was intellectually
+stimulating."
+* "engaging": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The asynchronous material was engaging."
+* "discussion": Average answer from 1(Strongly Disagree) to 5(Strongly Agree) to the question: "The asynchronous material prepared me to contribute to inclass discussions during live sessions."
+[9] "hours": Average answer to the time taken for the course per week:  1 (less than 3 hours), 2 (3-5 hours), 3 (6-8 hours), 4 (9-11 hours), 5 (more than 11 hours)
+
+The final dataset is course_list:
+
+```{r}
+head(course_list)
+```
+
+This dataset contains the information of the courses being offered this semester:
+
+* "course_id": ID of the course
+* "subject": name of the course
+* "instructor": ID of the instructor of the course
+* "location": Room for the class
+* "day_of_week": Day of the class
+* "time": Time of the class
+
+<hr>
+
+## Getting informaton from diferent tables
+
+Because data is distributed among several tables, we will now see an example on how to get data from one table given information from another.  To exemplify this, we will create a visualization of the distribution of the major of the students that have taken the course "272" ACC.  
+
+First we will get the ID of all the students that have taken that course from the "student_course" dataset:
+
+```{r}
+selected_students <- student_course %>%
+                     filter(CATALOG_NBR==272) %>%
+                     select(ANONID)
+
+head(selected_students)
+```
+
+To the student_course dataset we apply a filter to select only those rows in which the course ID (CATALOG_NBR) is 272. Then we select only the student ID column (ANONID).
+
+Now, from the student_records dataset, we select all those that are in the list of selected students:
+
+```{r}
+selected_students_data<-student_records %>%
+                        filter(ANONID %in% selected_students$ANONID)
+
+head(selected_students_data)
+```
+
+We filter the students of which their ID (ANONID) is in the list of selected_students IDs.  
+
+Then we generate a barchart of the top 10 majors of the selected students:
+
+```{r}
+selected_students_data %>%
+            drop_na(MAJOR1_DESCR) %>%
+            group_by(MAJOR1_DESCR) %>% 
+            tally() %>%
+            arrange(desc(n)) %>%
+            slice(1:10) %>%
+            ggplot(aes(x=reorder(MAJOR1_DESCR,n), y=n))+
+            geom_bar(stat='identity') + coord_flip()
+
+```
+
+From the data of the selected students, we first eliminate those that have not chosen a major yet and have a NA in the MAJOR1_DESCR column (drop_na).  
+
+Then we group the remained students by their major (group_by).
+
+Then we count the number of students in each group (tally).
+
+Then we arrange the list from the hightest to the lowest number of counts (arrange(desc n))
+
+Then we take only the first 10 (slice(1:10))
+
+Then we plot the data.  The x axis will be major (ordered by the count [reorder(MAJOR1_DESCR,n)]), the y axis will be the count [n].  Then we select the barchart (geom_bar) that will show the value of y (identity).  Finally we flip the axes to make it more pleasent to the eye.
+
+
