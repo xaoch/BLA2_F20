@@ -1,0 +1,680 @@
+---
+title: "Predicting Droput - OULAD dataset"
+output:
+  html_document:
+    df_print: paged
+---
+
+During this tutorial we will explore a complex dataset and use it to predict student droput. The main goals of this tutorial are to:
+
+- Manipulating complex interlinked datasets
+- Format the data in a format that is accepted by statistical and machine learning models
+- Use statistical models for prediction
+- Use machine learning models for prediction
+- Evaluate prediction certainty
+- Visualize prediciton
+
+This dataset is available in https://analyse.kmi.open.ac.uk/open_dataset and correspond to student activity in several MOOCs of the Open University UK.
+
+## Step 1: Loading the Data
+
+First we will import the csv files with the data
+
+```{r}
+library(readr)
+library(tidyverse)
+assessments <- read_csv("data/assessments.csv")
+courses <- read_csv("data/courses.csv")
+studentAssessment <- read_csv("data/studentAssessment.csv")
+studentInfo <- read_csv("data/studentInfo.csv")
+studentRegistration <- read_csv("data/studentRegistration.csv")
+studentVle <- read_csv("data/studentVle.csv")
+vle <- read_csv("data/vle.csv")
+```
+
+## Step 2: Extracting Outcomes and Predictors
+
+Then we create a set of functions that will enable to extract outcome from the different tables.  This information is the final status (Pass, Fail), if the student has withdrawn (dropout) and the final score in the course.
+
+First, get the final state (Pass, Fail) of the students in a given course.  If the student has a "Withdrawn" state, we remove them from the list.  If the student has "Distinction" as a final state, we count it as a "Pass".
+
+```{r}
+getFinalState<-function(course)
+{
+  studentInfo%>%
+    filter(code_module==course) %>%
+    filter(final_result!="Withdrawn") %>%
+    mutate(final_result=ifelse(final_result=="Distinction","Pass",final_result))%>%
+    mutate(final_result=as.factor(final_result))%>%
+    select("id_student", "final_result")
+}
+```
+
+<font color="darkblue">**Explanation:**
+
+This function take as parameter the name of course from which we want to extract the information.
+
+We take the studentInfo dataset and first we filter only those rows in which the "course_module" column is the course that we want to select.
+
+Then we filter only those rows in which the "final_result" is NOT "Withdrawn" (we use != to say different or not equal to).
+
+Then we use mutate to change the final_result value.  We use the ifelse function to check if the content is "Distinction".  If it is true, we change it for "Pass", if not, we leave whatever value was there originally.
+
+Finally, we only retain the "id_student" and the "final_result" columns.
+</font>
+
+Next, we will create a function to obtain the if a student has droped-out of the course.  We do this by checking if the final state is "Withdrawn"
+
+```{r}
+getDropout<-function(course)
+{
+  studentInfo%>%
+    filter(code_module==course) %>%
+    mutate(dropout=ifelse(final_result=="Withdrawn",1,0))%>%
+    mutate(dropout=as.factor(dropout))%>%
+    select("id_student", "dropout")
+}
+```
+<font color="darkblue">**Explanation:**
+
+This function take as parameter the name of course from which we want to extract the information.
+
+We take the studentInfo dataset and first we filter only those rows in which the "course_module" column is the course that we want to select.
+
+Then we create a new column ("dropout") that will contain a 1 if the "final_result" column contains "Withdrawn" or a 0, if it contains anything else.
+
+Finally, we only retain the "id_student" and the "dropout" columns.
+</font>
+
+Continuing, we will create a function to obtain the final grade of the student, given the course.  This is a little more complicated than the previous functions, because we need to use two datasets.  First, we need to find what is the ID code of the "Exam" assessment from the "assessments" dataset for the course.  Then we need to use those ID codes to select only those assessments from the "studentAssessment" dataset.
+
+```{r}
+getFinalGrade<-function(course)
+{
+  finalExam<-assessments%>%
+              filter(code_module==course)%>%
+              filter(assessment_type=="Exam")
+  inner_join(studentAssessment,finalExam, by = c("id_assessment" = "id_assessment"))%>%
+  select("id_student","score")
+}
+```
+
+<font color="darkblue">**Explanation:**
+
+This function take as parameter the name of course from which we want to extract the information.
+
+First we create a new dataset ("finalExam") that will contain only the information of the "Exam" assignments for a given course. To create thi dataset, first we use the "assessment" dataset, then we filter only the "course" that we want and then we filter only those rows that contains the word "Exam" in the "assessment_type" column.
+
+Then we combine the "studentAssessment" and our create "finalExam" datasets.  To do this, we use the inner_join function that match rows from both dataset that share a value.  In this case we use the value in the "id_assessment" column in both datasets to create the link.  This inner join presever only row in the first dataset ("studentAssessment") that correspond to the ID code of the exams that we extracted in "finalExam".
+
+Finally, we only retain the "id_student" and the "score" columns.
+</font>
+
+For the next functions, that will extract the predictors, we should specify not only the course from which we want the information, but the period of time since the start of the course at which want to make the prediction.
+
+We will start with the information about the assessments deliverd by the student.  We will extract two predictors, the average grade of the assessments present until that date, and the total number of assessments presented.
+
+```{r}
+getAssessmentPredictors<-function(course,days)
+{
+  courseAssessments<-assessments%>%
+                     filter(code_module==course)%>%
+                     filter(date<days)
+  studentAssessment%>%
+    filter(id_assessment %in% courseAssessments$id_assessment)%>%
+    group_by(id_student)%>%
+    summarise(avgScore=mean(score),delivered=n())
+}
+```
+
+<font color="darkblue">**Explanation:**
+
+This function take two parameters: 1) the name of course from which we want to extract the information and 2) the day at which we cut the information (we only consider information previous to this day in the course)
+
+First we create a new dataset ("courseAssessments") that will contain only the assessments in the specified course with a deadline that is before the cut-off day.
+
+Then, from the studentAssessment dataset, we extract only the information in which the ID of the assessment is contained in the list of "courseAssessment" obtained before.  Then we group the resulting information by each student and we calculate the average score ("mean(score)")and store it in the "avgScore" variable and the number of delivered assignments ("n()") and store it inthe delivered variable.
+
+The resulting dataset has only three columns: "student_id" because it was used to group the calculation and the "avgScore" and "delivered" columns that we calculated.
+</font>
+
+Then we obtain the information about lateness delivery of assessments.  For this we need information about the deadline of the assessment and we substract the deliver day to calculate if it was delivered late.
+
+```{r}
+getLateAssessments<-function(course,days)
+{
+  courseAssessments<-assessments%>%
+    filter(code_module==course)%>%
+    filter(date<days)
+  fullAssessments<-inner_join(studentAssessment,courseAssessments,by = c("id_assessment" = "id_assessment"))
+  fullAssessments%>%
+    mutate(delay=ifelse(date<date_submitted,1,0))%>%
+    group_by(id_student)%>%
+    summarise(sumDelays=sum(delay))
+}
+```
+
+<font color="darkblue">**Explanation:**
+
+This function take two parameters: 1) the name of course from which we want to extract the information and 2) the day at which we cut the information (we only consider information previous to this day in the course)
+
+First we create a new dataset ("courseAssessments") that will contain only the assessments in the specified course with a deadline that is before the cut-off day.
+
+Then, we join (inner_join) that information with that contained in the "studentAssessment" dataset, where both assessment IDs (id_assessment) are equal. 
+
+We use this merged dataset ("fullAssessments") and we calculate a "delay" column that will be 1 if the date of submission ("date_submitted") is later than the date of the deadline.  Then we group by the ID of the student and calculate the number of delasy (summing the delay column).
+
+The resulting dataset has only two columns: "student_id" because it was used to group the calculation and the "sumDelays" that we calculated.
+</font>
+
+Finally we will get information from the number of clicks in the VLE information.  We will get tree predictors, the total number of clicks, the average number of clicks per day and the number of active days.
+
+```{r}
+getClickInfo<-function(course,days)
+{
+  studentVle%>%
+    filter(code_module==course)%>%
+    filter(date<days+1)%>%
+    group_by(id_student,date)%>%
+    summarise(daily_clicks=sum(sum_click),daily_elements=n())%>%
+    group_by(id_student)%>%
+    summarise(total_clicks=sum(daily_clicks),total_elements=sum(daily_elements),active_days=n())%>%
+    mutate(average_daily_clicks=total_clicks/active_days,average_elements=total_elements/active_days)
+}
+```
+<font color="darkblue">**Explanation:**
+
+This function take two parameters: 1) the name of course from which we want to extract the information and 2) the day at which we cut the information (we only consider information previous to this day in the course)
+
+From the "studentVle" dataset, we filter only the information related to the selected course.  
+
+Then we only select information that happened before the cut-off day.
+
+Then we gropu the data by student and day, so we can get daily activity per student.  We obtain the number of daily clicks adding all the clicks done during that day in different elements ("sum(sum_click)") and the number of elements clicked on that day ("n()").
+
+Then we only group by student to obtain totals for each student.
+
+Then we obtain total clicks by adding all the daily_clicks, the total number of elements by adding the daily_elements, and the total number of days that the student was active in the VLE ("n()").
+
+Finally, we calculate daily average values of clicks and elements by dividing them by the total number of active days.
+</font>
+
+## Step 4: Assembling the Predictors
+
+First we will put together the extracted numerical predictors for a given course ("DDD") and cut-off days (50).
+
+```{r}
+course="DDD"
+days=50
+
+clicksInfo<-getClickInfo(course,days)
+assessInfo<-getAssessmentPredictors(course,days)
+latenessInfo<-getLateAssessments(course,days)
+
+temp1<-merge(clicksInfo,assessInfo,by="id_student")
+predictors<-merge(temp1,latenessInfo,by="id_student")
+
+```
+<font color="darkblue">**Explanation:**
+
+First we will define "DDD" as the course that we are interested.
+
+Then we set 50 as the cut-off date where the prediction will be performed.
+
+In the dataset clicksInfo, we store the features from the interactions with the VLE
+
+In the dataset assessInfo, we store the features from the assessment
+
+In the dataset latenessInfo, we store the features fro which assessements were submitted late
+
+Then we merge these 3 datasets into predictors.  First we merge clickInfo and assessInfo by the ID of the student, then we merge that with latenessInfo, again by the ID of the student.  The result "predictors" has all the variables that we extracted from the VLE and assessment information.
+</font>
+
+Now we will add additional predictors from the studentInfo (minus the final_result and the course information)
+
+```{r}
+predictors<-left_join(predictors,studentInfo,by="id_student")%>%
+            select(!c("final_result", "code_module", "code_presentation"))
+```
+<font color="darkblue">**Explanation:**
+
+We now join the dataset "predictors" with the studentInfo by the id of the student.  We use left_join to maintain all the rows in the predictor dataset.  The join is performed by the ID of the student.  
+
+We eliminate the "final_result", "code_module" and "code_presentation" columns because they will not be used as predictors.
+</font>
+
+
+
+## Step 4: Assembling the Outcomes
+
+Now, we create the outcome values of Pass/Fail (finalState), the final grade (finalGrade) and the dropout (dropout)
+
+```{r}
+finalState<-getFinalState(course)
+finalGrade<-getFinalGrade(course)
+dropout<-getDropout(course)
+```
+
+<font color="darkblue">**Explanation:**
+
+We use the previously created functions to store the final state (Pass/Fail), the final grade (0 to 100) and the droput (1 if droped-out or 0 if they finished) in their respective datasets.
+
+</font>
+
+
+Now we will create three datasets, each one with the predictors and one of the outcomes.  We also eliminate the id_student column as it is not needed for the prediction.
+
+```{r}
+datasetState<-merge(predictors,finalState,by="id_student")%>%
+          select(!"id_student")
+```
+
+<font color="darkblue">**Explanation:**
+
+We merge the outocomes with the predictors to obtain three different datasets: one for the final state, one for the grades and one for the droput.
+
+</font>
+
+## Step 5: Classification models
+
+We will learn how to build and evaluate classification models in R.  For this we will use the "caret" library that interacts with a bunch of existing libraries implementing machine learning models.
+
+First we will split our dataset into two parts.  One for training, and another to validate how effective the model is. 
+
+```{r}
+library(caret)
+set.seed(123)
+
+index <- createDataPartition(datasetState$final_result, p = .7, list = FALSE, times = 1)
+
+trainState <- datasetState[ index,]
+testState  <- datasetState[-index,]
+
+fitControl <- trainControl(method = "cv", number = 10)
+preProcess = c("center", "scale")
+
+```
+<font color="darkblue">**Explanation:**
+
+First, we import the caret library (install it if you do not have it).
+
+Then we set a random seed to have the same results no matter when we run the code.  If we do not do this, each time there will be a different random selection (preffered in real world).
+
+Then, we use the createDataPartition function to divide the datasetState into two parts.  The first one will have 70% of the data (0.7) and the other the 30% of the data.  A list of 1s and 0s is created to identify those rows that will be train (1) or test (0).
+
+We create these two datasets by selecting from datasetState those rows that are in the train set (index), and those that are not (-index).
+
+Finally, we set up the way in which the training will select the best model.  We will use Cross-Validation ("cv") one time.
+
+</font>
+
+
+We will start with building a simple classification models that will determine if a student will pass or fail the the "DDD" course based on only the first 50 days of data.
+
+We will try different models.  First, a <a href="https://www.datacamp.com/community/tutorials/decision-trees-R">Decision Tree</a>. For that we will use the library "rpart" that contains that algorithm.
+
+```{r}
+modelDT <- train(final_result~., data=trainState, method="rpart", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+print(modelDT)
+```
+<font color="darkblue">**Explanation:**
+
+We use the train function from the caret library.  This function need the formula that specify which column will be the outcome, "final_result" in our case, and which columns will be the predictors, all other columns in our case.  This is represented by the formula: "final_result~.".  Then it needs the dataset that will be used to train the model.  In this case we use the trainState dataset.  Then, it needs the algorithm that it will use to create the model.  We use "rpart" that is one to create Decision Trees.  We then specify the type of training to perform (10 Fold Cross-validation one-time).  Finally, we say that if one row is missing data, it will be omited from the model ("na.action=na.omit").
+
+Once the training is finished, we print the information of the model.  It says that the best training model had an accuracy of 0.7576.
+
+</font>
+
+That is it.  We have trained a Machine Learning model with the data.  This model is able to classify new student data into "Pass" or "Fail" final state. 
+
+One nice thing about Decision Trees is that we can visualize ther internal rules.  We use the library rpart.plot to do it.
+
+```{r}
+library (rpart.plot)
+
+rpart.plot(modelDT$finalModel)
+```
+<font color="darkblue">**Explanation:**
+
+We import the rpart.plot library (install it if you do not have it.)
+
+Then we plot the final selectd model.
+
+In the result, we can see that each node has tree numbers.  The first indicate the class that is majority in that node (Pass or Fail). Then, which percentage of elements in that node are from the selected class.  Finally, how many of the elements in the training dataset are in that node.  For example, in the first node, the majority class is Pass.  68% of the elements in that node are of the Pass type and it contains 100% of the dataset elements.  
+
+Below the nodes there are rules.  In the first division, it says that if the average Score is lower than 67 two different outcomes could happen.  If yes, you go to a node that is mainly Fail, while if no, you go to a node that is mainly Pass.  These rules are nested inside each other and divide the dataset in incresingly more precise divisions.
+
+</font>
+
+Interesting rules.  It tell us that if your average score in the assessments on day 50 is higher than 71, you are likely to pass (more than 81% of those in that group pass the course).
+
+But how well the prediction works?  We need to evaluate the model.  For that, we use the test partition that we create earlier.
+
+```{r}
+predict_unseen <-predict(modelDT, testState, type = 'raw', na.action = na.omit)
+confusionMatrix(predict_unseen, na.omit(testState)$final_result)
+```
+<font color="darkblue">**Explanation:**
+
+To evaluate the model we use the "predict" function, that takes the model, the dataset that will be used for the prediction.  In this case we use the "raw" type to get the final prediction and na.omit to avoid incomplete data.
+
+Then we create a confusion matrix, that compare the prediction (predict_unseen) with the reality testState$final_result.  We use the na.omit to also eliminate those rows that have incomplete data.
+
+</font>
+
+The accuracy of our model is 76%, that is it predict the real outcome 76% of the time.  But are there more false positives or more false negatives (when Positive is dectecting a Fail).  According to the confusion Matrix, most of the errors are false negatives (failing students that are wrongly classified as passing students).  That leads to a low sensistivity (39%), our model is not able to clearly isolate only the failing students.
+
+Let's try with more advanced models, such as <a href="https://towardsdatascience.com/random-forest-in-r-f66adf80ec9">Random Forest</a>.  Training will take approximately 5 minutes.
+
+
+```{r}
+modelRF <- train(final_result~., data=trainState, method="rf", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+print(modelRF)
+
+```
+<font color="darkblue">**Explanation:**
+
+We use the same train function, with the only difference that the algorithm is RandomForests ("rf").
+
+The selected model has an estimated accuracy of 0.79.
+
+</font>
+
+Now we evaluate the Random Forest model in the test dataset.
+
+```{r}
+predict_unseen <-predict(modelRF, testState, na.action = na.omit)
+confusionMatrix(predict_unseen, na.omit(testState)$final_result)
+```
+
+This more advanced model increase the accuracy to 81% and the sensitivity to 62%.  
+
+Let's see other models.  <a href="https://www.datacamp.com/community/tutorials/support-vector-machines-r">Support Vector Machines</a>:
+
+```{r}
+modelSVM <- train(final_result ~ ., data=trainState, method="svmRadial", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+
+predict_unseen <-predict(modelSVM, testState, na.action = na.omit)
+confusionMatrix(predict_unseen, na.omit(testState)$final_result)
+```
+Support Vector Machines seems to be better than the Decision Tree, but worst than Random Forest.
+
+Let's try K-Neighbors
+```{r}
+modelKNN <- train(final_result ~ ., data=datasetState, method="knn", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+predict_unseen <-predict(modelKNN, testState, na.action = na.omit)
+confusionMatrix(predict_unseen, na.omit(testState)$final_result)
+```
+
+Similar results, lets try Linear Discriminant Analysis
+
+
+```{r}
+modelLDA <- train(final_result ~ ., data=datasetState, method="lda", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+predict_unseen <-predict(modelLDA, testState, na.action = na.omit)
+confusionMatrix(predict_unseen, na.omit(testState)$final_result)
+```
+
+Not different.  
+
+From our analysis, it seems that Random Forest is the best model for our data.  Let's explore what are the predictors that are important according to the model.
+
+```{r}
+library(randomForest)
+
+varImpPlot(modelRF$finalModel)
+```
+As we can see, the average score at day 50 is the most important indicator for the student passing or failing the course, followed by the total and average number of elements that the student has clicked in the VLE and how active the student is in the VLE in general.
+
+We will retrain the model to use the whole data and we will save this model to use it into our dashboard
+
+
+```{r}
+modelRFFinal <- train(final_result~., data=datasetState, method="rf", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+
+saveRDS(modelRFFinal, "./classification_model.rds")
+```
+
+
+
+## Step 6: Regresion models
+
+Now we would want to estimate the final grade of the students.  For this we will select again the "DDD" course, but now, we will use information from the first 100 days.  Additionally, we create the train and test datasets.
+
+```{r}
+course="DDD"
+days=100
+
+clicksInfo<-getClickInfo(course,days)
+assessInfo<-getAssessmentPredictors(course,days)
+latenessInfo<-getLateAssessments(course,days)
+
+temp1<-merge(clicksInfo,assessInfo,by="id_student")
+predictors<-merge(temp1,latenessInfo,by="id_student")
+
+datasetGrade<-merge(predictors,finalGrade,by="id_student")%>%
+          select(!"id_student")
+
+index <- createDataPartition(datasetGrade$score, p = 0.7, list = FALSE)
+
+trainGrade <- datasetGrade[index, ]
+testGrade  <- datasetGrade[-index, ]
+```
+
+<font color="darkblue">**Explanation:**
+
+We recreate the datasets for course "DDD" and the first 100 days of data.
+
+We create a partition of 70/30 for the test and train data using the CreateDataPartition function
+
+</font>
+
+Now we train a linear model.
+
+```{r}
+
+modelLM <- train(score ~ ., data = trainGrade, method = "lm", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+print(modelLM)
+
+```
+This model is able to predict the grade of the students with an average error of 15 points.  However, it is only able to explain 33% of the variation.
+
+To have a better idea of how well the model predict the unseen data, we plot the prediction versus the actual values.
+
+```{r}
+plot(predict(modelLM,testGrade),na.omit(testGrade)$score)
+```
+Now we try with more sophisticated models, for example Ridge:
+
+```{r}
+
+modelRidge <- train(score ~ ., data = trainGrade, method = "ridge", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+print(modelRidge)
+plot(predict(modelRidge,testGrade),na.omit(testGrade)$score)
+
+```
+And MARS:
+
+```{r}
+modelEarth <- train(score ~ ., data = trainGrade, method = "earth", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+print(modelEarth)
+plot(predict(modelEarth,testGrade),na.omit(testGrade)$score)
+
+```
+As you can see there is no better way to estimate the final grade with the data that we have.  So we will train the linear model and save it.
+
+```{r}
+modelLMFinal <- train(score ~ ., data = datasetGrade, method = "lm", trControl=fitControl, preProcess=preProcess, na.action=na.omit)
+
+saveRDS(modelLMFinal, "./regression_model.rds")
+
+```
+
+
+## Step 7: Prediction Dashboard
+
+We will use our both models (the classification and regression models) to create a dashboard.  In this dashboard the, the user will input the variables for each student and the system will predict if that student will pass or fail (for classification) and what grade with the student get.
+
+Let's create the App.R.  Remember to copy the models that you save into the same directory as the App.R for it to work.
+
+```{r}
+#
+# This is a Shiny web application. You can run the application by clicking
+# the 'Run App' button above.
+#
+# Find out more about building applications with Shiny here:
+#
+#    http://shiny.rstudio.com/
+#
+
+library(shiny)
+library(shinydashboard)
+
+classificationModel= readRDS("./classification_model.rds")
+print("model")
+print(classificationModel)
+regressionModel= readRDS("./regression_model.rds")
+
+ui <- dashboardPage(
+    dashboardHeader(title = "Prediction Dashboard"),
+    dashboardSidebar(
+        sidebarMenu(
+            h3("Prediction Types"),
+            menuItem("Classification", tabName = "classification", icon = icon("dashboard")),
+            menuItem("Regression", tabName = "regression", icon = icon("th")),
+            h3("VLE Data"),
+                numericInput("total_clicks", "Total Clicks", value = 100),
+                numericInput("total_elements", "Total Elements", value = 100),
+                sliderInput("active_days", "Active Days",  min = 0, max = 50, value = 25),
+                numericInput("average_daily_clicks", "Average Daily Clicks",  value = 25),
+                numericInput("average_elements", "Average Daily Elements",  value = 25),
+            h3("Assessment Data"),
+                sliderInput("avgScore", "Average Score",  min = 0, max = 100, value = 50),
+                numericInput("delivered", "Deliverd Assessments", value = 5),
+                numericInput("sumDelays", "Delayed Days",  value = 0)
+        )
+    ),
+    dashboardBody(
+        tabItems(
+            # First tab content
+            tabItem(tabName = "classification",
+                    fluidRow(
+                        box(title="Student Info",
+                            radioButtons("gender", "Gender",
+                                         choices = list("Male" = "M", "Female" = "F"),selected = "M"),
+                            selectInput("region", "Region",
+                                        choices = list("East Anglian Region"="East Anglian Region",
+                                                       "Yorkshire Region"="Yorkshire Region",
+                                                       "East Midlands Region"="East Midlands Region",
+                                                       "South East Region"="South East Region",
+                                                       "North Western Region"= "North Western Region",
+                                                       "Scotland"="Scotland",
+                                                       "South West Region"="South West Region",
+                                                       "West Midlands Region"="West Midlands Region",
+                                                       "Wales"="Wales",
+                                                       "Ireland"="Ireland",             
+                                                       "South Region"="South Region",
+                                                       "London Region"="London Region",
+                                                       "North Region"="North Region"),selected = "London Region"),
+                            selectInput("highest_education", "Highest Level of Education",
+                                        choices =list("A Level or Equivalent",
+                                                      "Lower Than A Level",
+                                                      "HE Qualification",
+                                                      "Post Graduate Qualification",
+                                                      "No Formal quals"
+                                        ), selected="HE Qualification"),
+                            selectInput("imd_band", "IMD Band",
+                                        choices =list("0-10%", 
+                                                      "20-30%",
+                                                      "30-40%",
+                                                      "40-50%",
+                                                      "50-60%",
+                                                      "60-70%",
+                                                      "70-80%",
+                                                      "80-90%",
+                                                      "90-100%"
+                                        ), selected="50-60%"),
+                            selectInput("age_band", "Age Band",
+                                        choices =list("0-35",
+                                                      "35-55",
+                                                      "55<="
+                                        ), selected="0-35"),
+                            numericInput("num_of_prev_attempts", "Previous Attempts", value = 0),
+                            numericInput("studied_credits", "Studied Credits", value = 60),
+                            radioButtons("disability", "Disability",
+                                         choices = list("Yes" = "Y", "No" = "N"),selected = "N")
+                        ),
+                        valueBoxOutput("classificationPrediction"),
+
+                    ),
+                    
+                    ),
+            tabItem(tabName = "regression",
+                    
+                    fluidRow(
+                        valueBoxOutput("regressionPrediction"),
+                    )
+            )
+            ),
+            
+            # Second tab content
+            
+        
+    )
+)
+
+server <- function(input, output) {
+    
+    output$classificationPrediction <- renderValueBox({
+        dataset=data.frame("total_clicks"=input$total_clicks,
+                           "total_elements"=input$total_elements,
+                           "active_days"= input$active_days,
+                           "average_daily_clicks"=input$average_daily_clicks,
+                           "average_elements" = input$average_elements,
+                           "avgScore" = input$avgScore,
+                           "delivered" =input$delivered,
+                           "sumDelays" = input$sumDelays,
+                           "gender"= input$gender,
+                           "region"= input$region,
+                           "highest_education"= input$highest_education,
+                           "imd_band"=input$imd_band,
+                           "age_band"=input$age_band,
+                           "num_of_prev_attempts"=input$num_of_prev_attempts,
+                           "studied_credits"=input$studied_credits,
+                           "disability"=input$disability,
+                           "final_result"=NA
+                           
+        )
+        print(classificationModel)
+        predictedValue=predict(classificationModel,dataset)
+        print(predictedValue)
+        valueBox(
+            ifelse(predictedValue[1]=="Pass","Pass","Fail"),"Prediction", icon = icon(ifelse(predictedValue[1]=="Pass","check","exclamation")),
+            color = ifelse(predictedValue[1]=="Pass","green","red")
+        )
+    })
+    
+    output$regressionPrediction <- renderValueBox({
+        datasetRegression=data.frame("total_clicks"=input$total_clicks,
+                           "total_elements"=input$total_elements,
+                           "active_days"= input$active_days,
+                           "average_daily_clicks"=input$average_daily_clicks,
+                           "average_elements" = input$average_elements,
+                           "avgScore" = input$avgScore,
+                           "delivered" =input$delivered,
+                           "sumDelays" = input$sumDelays,
+                           "score"=NA
+                           
+        )
+        value=predict(regressionModel,datasetRegression)
+        valueBox(
+            format(value[1], digits=2, nsmall=2),"Final Grade", icon = icon(ifelse(value[1]>70,"check",ifelse(value[1]>50,"exclamation","times"))),
+            color = ifelse(value[1]>70,"green",ifelse(value>50,"yellow","red"))
+        )
+    })
+}
+
+shinyApp(ui, server)
+```
+
+
