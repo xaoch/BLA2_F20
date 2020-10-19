@@ -529,6 +529,8 @@ Let's create the App.R.  Remember to copy the models that you save into the same
 
 library(shiny)
 library(shinydashboard)
+library(caret)
+library(randomForest)
 
 classificationModel= readRDS("./classification_model.rds")
 print("model")

@@ -2271,7 +2271,10 @@ library(shinydashboard)</code></pre>
 <pre><code>## The following object is masked from &#39;package:graphics&#39;:
 ## 
 ##     box</code></pre>
-<pre class="r"><code>classificationModel= readRDS(&quot;./classification_model.rds&quot;)
+<pre class="r"><code>library(caret)
+library(randomForest)
+
+classificationModel= readRDS(&quot;./classification_model.rds&quot;)
 print(&quot;model&quot;)</code></pre>
 <pre><code>## [1] &quot;model&quot;</code></pre>
 <pre class="r"><code>print(classificationModel)</code></pre>
