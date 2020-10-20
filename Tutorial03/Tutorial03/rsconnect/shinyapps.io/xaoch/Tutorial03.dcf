@@ -1,0 +1,12 @@
+name: Tutorial03
+title: Tutorial03
+username:
+account: xaoch
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3053006
+bundleId: 3760422
+url: https://xaoch.shinyapps.io/Tutorial03/
+when: 1603153460.10388
+asMultiple: FALSE
+asStatic: FALSE

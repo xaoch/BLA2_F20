@@ -1,18 +1,585 @@
 ---
-title: "R Notebook"
-output: html_notebook
+title: "Process Analytis - DMDL"
+output:
+  html_document:
+    df_print: paged
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+During this tutorial we will explore Process Analytics using a fictitious dataset of DMDL academic data. The main goals of this tutorial are:
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+- Transform academic data into different process-like data
+- Perform basic analysis of the process
+- Visualize the process
+- Generate a tool to analyze the process
+
+This dataset is available at: https://github.com/xaoch/BLA2_F20/tree/master/Tutorial03/data
+
+## Step 1: Loading the Data
+
+First we will import some libraries and the csv files with the data
 
 ```{r}
-plot(cars)
+library(readr)
+library(tidyverse)
+library(lubridate)
+
+DMDLCourses <- read_csv("data/DMDLCourses.csv")
+student_courses <- read_csv("data/student_courses.csv")
+
+```
+<font color="darkblue">**Explanation:**
+
+First, we import three libraries: 
+
+- readr to efficiently load csv data
+- tidiverse to manipulate the structure of the data
+- lubridate to manipulate the dates format
+
+Then we load the csv files.  The first one "DMDLCourses.csv" contains the information about the courses with the following columns:
+
+- Code: Code of the course
+- Name: Name of the course
+- Semester: Semester in which the course is offered (Fall, Spring or Both)
+- Credits: Number of credits
+- Type: Type of the course (Required, Cognate, Specialization or Thesis)
+
+The second one is "student_courses.csv" that contains the information of the actual enrollment and result of student in different courses.  The columns are:
+
+- X1: Just an index of the enrollment number
+- StudentID: ID of the student
+- Year: Year of the enrollment (from 2000 to 2017)
+- Semester: Semester of the enrollment (Spring or Fall)
+- Course_Code: Code of the course taken
+- Grade: Letter grade from D to A obtained in the course
+
+</font>
+
+## Step 2: Determine Starting Year and Semester of Students
+
+To be able to filter different cohorts, we will create a different dataset that will contain the starting year and semester of each student.
+
+```{r}
+student_start<-student_courses %>%
+          group_by(StudentID) %>%
+          summarise(start_semester=first(Semester),start_year=first(Year))
+```
+<font color="darkblue">**Explanation:**
+
+Because we want to obtain the information for each student, we group the "student_course" dataset by "StudentID".
+
+Because the data is ordered by year and semester, we just select the first appearing year and semester.  To do this, we use the summarise function (that calculate across all the rows in the grouped categories, in this case StudentID).  In this function we set the start_semester as the first "Semester" found in the list for the student and the start_year as the first year found in the data from students.
+</font>
+
+In the case that the data is not ordered by year and semester, we could achieve a similar result with the following code:
+
+```{r}
+student_start_not_ordered<-student_courses %>%
+          mutate(semester_number=ifelse(Semester=="Spring",1,2))%>%
+          unite(year_semester,c(Year,semester_number))%>%
+          group_by(StudentID) %>%
+          summarise(start_year_semester=min(year_semester))%>%
+          separate(start_year_semester,c("start_year","start_semester"))%>%
+          mutate(start_semester=ifelse(start_semester==1,"Spring","Fall"))
+
+```
+<font color="darkblue">**Explanation:**
+
+The code here is a little more complex, because we need to sort the year and semester together.  
+
+First we convert "Spring" into a 1 and "Fall" into a 2.  We do this because alphabetically, "Spring" goes after "Fall", the contrary to what we want.
+
+Second, we unite the year and the semester into one string. For example "Year" 2002 and "Semester" 1, will result in "2002_1".
+
+Then, we group all the information by the StudentID.
+
+Then we obtain the minimum ("min") of the year_semester string.  Thanks to the previous steps, 2002 Spring, now "2002_1" will be lower than 2002 Fall "2002_2".
+
+Once we had this minimum, we separat this again into "2002" and "1", usinng the "separate" function.  We store the data into "start_year" and "start_semester" respectively.
+
+Finally, we convert the semester numbers back into "Spring" or "Fall" for consistency.
+
+</font>
+
+## Step 3: Manipulate the Data to Create States
+
+First, to make things faster, add the start year and semester to the data by joining the two datasets.
+
+```{r}
+
+student_courses_start<-left_join(student_courses,student_start,by="StudentID") 
+
+```
+<font color="darkblue">**Explanation:**
+
+The left_join function takes all the rows in student_courses and seach for matching rows in the student_start dataset.  The matching is made by the StudentID column.
+
+</font>
+
+Now is time to crate the event_log.  The event log need the following data:
+
+* A unique ID by case, in this case we will use the StudentID.
+* An activity ID that is the name of the different states in which the student will be. More on this later.
+* An activity instance ID that identify when different times in which a state is visited.  More on this later.
+* A lifecycle ID that represent the action or event for the activity. For example "enrolled" or "completed"
+* A timestamp that describe at which moment this state happened.
+* A resource (or list of resources) used during that activity.
+
+In this first try we will name each state (activity ID) with the relative number of the semester in which the student is enroll and the number of courses in which the student is enrolled.  For example if the student have taken 4 courses on their third semester, the activty ID will be "3_4".  For this we need to calculate the number of courses taken each semester.
+
+The activity instance ID will be a sequential number that indicate the number of the event. 
+
+The lifecylce ID will be "complete"
+
+The timestamp will be the start of the semester (January for Spring and September for Fall).
+
+The resource will be the list of courses taken during that semester.
+
+```{r}
+event_log<-student_courses_start%>%
+           mutate(Semester=ifelse(Semester=="Spring",1,2))%>%
+           group_by(StudentID,Year,Semester)%>%
+           summarise(courses_taken=n(), 
+                     course_codes=paste0(Course_Code, collapse = ","),
+                     start_year=first(start_year),
+                     start_semester=first(start_semester))%>%
+           group_by(StudentID)%>%
+           mutate(semester_number=row_number())%>%
+           mutate(timestamp=date_decimal(Year+ifelse(Semester==1,1/12,8/12)))%>%
+           mutate(status="complete") %>%
+           mutate(activity=paste(semester_number,"_",courses_taken))%>%
+           ungroup()%>%
+           mutate(activity_instance_id=row_number())
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+<font color="darkblue">**Explanation:**
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+First, we will convert the Semester data into 1 ("Spring") or 2 ("Fall") for ordering purposes.
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+Then, we will group by StudentID, Year and Semester to have in each group the courses taken during each semester.  We apply the n() function to get the number of courses in each group that is the number of courses taken during that semester ("courses_taken").  We concatenate the name of the courses in the "course_codes" variable that later we will use as "resources".  We preserve the start_year and start_date variables too.
+
+Once this calculation is over, we group the dataset by "Student_ID".  We assign each semester for group a sequential number (semester_number=row_number()).  This will calculate the relative order of the semester.  The first semester for a student will be 1, the second semester will be 2, and so on.  We can do this because the data is ordered.  If it is not, we need to do something similar to what we did in the "student_start_non_ordered" calculation.
+
+We then create a timestamp.  For this we take the year and we add the fraction of the months.  For this, if the semester is 1 ("Spring"), we add 1/12 of year (one month), if it is 2 ("Fall"), we add 8/12 of year (8 months).  We use the function "date_decimal" to convert it to a proper date.
+
+We then add the status "complete" to all rows.
+
+Then create the activity id ("activity") by concatenating the semester_number with the number of courses taken.  
+
+Finally, we ungroup, because the next operation will be done for each row (not grouped).  We just add a sequential number to each row to indicate the activity instance id.
+
+</font>
+
+## Step 4: Process Analytics
+
+Now that the data is in a format that could be accepted by <a href="https://www.bupar.net/">bupaR</a>, the library that we will use, we proceed to apply simple  process analytics.
+
+We will start by importing the needed libraries.
+
+```{r}
+library(bupaR)
+library(eventdataR)
+library(edeaR)
+library(processmapR)
+
+```
+
+Now, we will convert our event_log into a bupar process:
+
+```{r}
+
+
+process <-event_log %>%
+    eventlog(
+        case_id = "StudentID",
+        activity_id = "activity",
+        activity_instance_id = "activity_instance_id",
+        lifecycle_id = "status",
+        timestamp = "timestamp",
+        resource_id = "course_codes"
+    )
+```
+
+<font color="darkblue">**Explanation:**
+
+We take the event_log that we create previously and assign some of its columns to the required elements of a bupar process:
+
+- StudentID will be the case_id (that identify an individual case with several events)
+- activity will be activity_id (that identify the state in which the case is)
+- activity_instance_id (is the number of the event in general - a sequential number in our case)
+- lifecylce_id is the "complete" status in our case.
+- timestamp
+- resource_id is the code of the courses taken during that semester.
+
+We store the resulting process in the "process" variable and we will start analyzing it.
+
+</font>
+
+First, we will calculate how much time different students take to graduate from the program.
+
+
+```{r}
+process %>%
+    throughput_time("log") %>%
+    plot()
+```
+
+<font color="darkblue">**Explanation:**
+
+We use the troughput_time wth the parameter "log" so we can calculate for the whole event log.
+
+The result shows that from the time from the first enrollment to the date of the final enrollment most students expend 660 days (2 years), although there are students that finish faster (1 and a half years) and others that take more than 4 years.
+
+</font>
+
+To have a clearer view, we can try to plot the distribution in the number of semester, or the trace length of the students.
+
+```{r}
+process %>%
+    trace_length("log") %>%
+    plot
+```
+<font color="darkblue">**Explanation:**
+
+We use the trace_length function with the parameter "log" so we can calculate for the whole event log.
+
+The result shows in average the students take 5 semester to finish, with some students going into 8, 9 and 10 semesters (remember, this is simulated data).
+
+</font>
+
+Then, we will visualize the most common state of the students.
+
+```{r}
+process %>% 
+  activity_presence() %>%
+  plot
+```
+<font color="darkblue">**Explanation:**
+
+Now we use the activity_presence function to calculate what is the most common state in which the students are into.
+
+The result shows that taking 4 courses in the 3nd semester is the most common state with almost the 75% of students taking this step.
+
+</font>
+
+
+
+## Step 4: Visualizing the Process
+
+The most important visualization for the process is to plot the different paths that the students take.
+
+```{r}
+process %>%
+    process_map(type = frequency("relative_case"))
+```
+<font color="darkblue">**Explanation:**
+
+We use the process_map function.  The type that we want is "relative_case", that is the percentage of cases that visit a state, or, in the case of edges in the graph, the percentage of students that transit the link.
+
+From the graph we can deduct that the most common path is for students to take 3 or 4 courses the first semester, 4 courses during the second, third and fourth semesters and then finish the program.  However, there is a good portion of students that take different paths and sometimes more semesters.
+
+</font>
+
+This visualization, while interesting, is very crowed.  We can filter only those traces that are more common:
+
+```{r}
+process %>%
+  filter_trace_frequency(percentage = 0.30) %>%  
+  process_map(type = frequency("relative_case"))
+
+    
+```
+Here we can see the process that cover the 30% most common cases. It is simpler, but only cover 30% of the data.
+
+We can now see those events that are visited by at least 5 students.
+
+```{r}
+process %>%
+  filter_trace_frequency(interval = c(10, NA)) %>%  
+  process_map(type = frequency("absolute_case"))
+```
+We can also filter to consider just one cohort.  For this we use the known filter command:
+
+```{r}
+process %>%
+  filter(start_year==2001) %>%  
+  process_map(type = frequency("absolute_case"))
+```
+
+To add a little bit of flair, we can animate the process map.  For that we use the processanimateR library.
+
+```{r}
+library(processanimateR)
+
+process%>%
+  filter_trace_frequency(interval = c(5, NA)) %>%  
+  animate_process()
+```
+
+We can also visualize the Precedence Matrix:
+
+```{r}
+process %>%
+    precedence_matrix(type = "absolute") %>%
+    plot
+```
+Or the Dotted Matrix:
+
+```{r}
+process %>%
+    dotted_chart(x = "relative", y = "end")
+```
+
+Or we can explore the most common traces:
+
+```{r}
+process %>%
+    trace_explorer()
+```
+
+## Step 5: Alternatives for Different States
+
+We can do the same, but now, the states will be grade of the students.  We will use the full list of students.  First we convert the letter grades into numeric scores:
+
+```{r}
+graded_student_courses<-student_courses_start%>%
+            mutate(Grade = case_when(
+            Grade == "A" ~ 4,
+            Grade == "A-" ~ 3.7,
+            Grade == "B+" ~ 3.3,
+            Grade == "B" ~ 3,
+            Grade == "B-" ~ 2.7,
+            Grade == "C+" ~ 2.3,
+            Grade == "C" ~ 2,
+            Grade == "C-" ~ 1.7,
+            Grade == "D+" ~ 1.3,
+            Grade == "D" ~ 1
+            )
+            )
+```
+
+Now we conver the data into an event_log:
+
+```{r}
+
+event_log_graded<-graded_student_courses%>%
+           mutate(Semester=ifelse(Semester=="Spring",1,2))%>%
+           group_by(StudentID,Year,Semester)%>%
+           summarise(GPA=mean(Grade),
+                     course_codes=paste0(Course_Code, collapse = ","),
+                     start_year=first(start_year),
+                     start_semester=first(start_semester))%>%
+           group_by(StudentID)%>%
+           mutate(semester_number=row_number())%>%
+           mutate(timestamp=date_decimal(Year+ifelse(Semester==1,1/12,8/12)))%>%
+           mutate(status="complete") %>%
+           ungroup()%>%
+           mutate(activity_instance_id=row_number())
+
+event_log_graded$GPA= cut(event_log_graded$GPA,breaks=c(-Inf, 1, 1.3, 1.7, 2.0, 2.3, 2.7, 3.0, 3.3, 3.7, Inf), 
+               labels=c("D","D+","C-","C","C+","B-","B","B+","A-","A"))
+
+
+
+```
+
+<font color="darkblue">**Explanation:**
+
+It is similar to the previous conversion, but now, instead of calculating the number of courses taken, we calculate the average grade.  
+
+At the end we convert back from numbers to a letter grade used the "cut" function.  We provide the breaks at which we want to categorize the variable.
+
+</font>
+
+Then we convert the data into a bupaR process.  GPA is our new activity_id
+
+```{r}
+process_graded <-event_log_graded %>%
+    eventlog(
+        case_id = "StudentID",
+        activity_id = "GPA",
+        activity_instance_id = "activity_instance_id",
+        lifecycle_id = "status",
+        timestamp = "timestamp",
+        resource_id = "course_codes"
+    )
+```
+
+Now, we can visualize it:
+
+```{r}
+
+process_graded %>%
+    process_map(type = frequency("relative_case"))
+
+```
+Now we reduce the map to only consider those traces where there are more than 5 students.
+
+```{r}
+
+process_graded %>%
+  filter_trace_frequency(interval = c(5, NA)) %>%  
+  process_map(type = frequency("absolute_case"))
+
+```
+We can also filter by those started in the Spring semester:
+
+```{r}
+process_graded %>%
+  filter(start_semester=="Spring")%>%
+   process_map(type = frequency("relative_case"))
+```
+
+
+
+Finally, we animate this restricted process:
+
+```{r}
+
+process_graded%>%
+  filter_trace_frequency(interval = c(5, NA)) %>% 
+  animate_process()
+
+```
+## Step 6: Saving Process
+
+We will store the process objects into files.  For that we will do:
+
+```{r}
+
+library(xesreadR)
+
+write_xes(process, "process.xes")
+write_xes(process_graded, "process_graded.xes")
+
+
+```
+
+
+## Step 7: Create a Dashboard
+
+With the saved process we will create a Shiny dashboard to analyze them.  This dashboard will present the concept map 
+
+```{r}
+#
+# This is a Shiny web application. You can run the application by clicking
+# the 'Run App' button above.
+#
+# Find out more about building applications with Shiny here:
+#
+#    http://shiny.rstudio.com/
+#
+
+library(shiny)
+library(shinydashboard)
+library(shinyWidgets)
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(bupaR)
+library(eventdataR)
+library(edeaR)
+library(processmapR)
+library(xesreadR)
+library(DiagrammeR)
+
+# Load the process files
+
+process_semester<-read_xes("process.xes")
+process_grades<-read_xes("process_graded.xes")
+
+# Define UI for application that draws a histogram
+ui <- dashboardPage(
+    dashboardHeader(title = "Process Analytics"),
+    dashboardSidebar(
+        sidebarMenu(
+            menuItem("Filters",  icon = icon("dashboard")),
+            sliderTextInput(
+                inputId = "years",
+                label = "Choose Cohorts:", 
+                choices = 2000:2017,
+                selected =c(2000,2017)
+            ),
+            selectInput("semester", "Choose Starting Semester:",
+                        choices = list("Both"=0,
+                                       "Fall"=2,
+                                       "Spring"=1), 
+                        selected = "Both"),
+            sliderInput("coverage", "Percentage of Cases Covered",  min = 0, max = 100, value = 30)
+        )
+    ),
+    dashboardBody(
+        tabBox(height = "1100px", width = "1000px",
+               
+               tabPanel(title = tagList(icon("project-diagram", 
+                                             class = "fas fa-project-diagram"),
+                                        "SEMESTER COURSE"),
+                        box(grVizOutput("Pr_map_semester"), 
+                            status = "primary", 
+                            solidHeader = TRUE,
+                            title = "PROCESS MAP", 
+                            width = 12, 
+                            height = 612, 
+                            collapsible = TRUE),                
+        
+                            
+                     ),
+               tabPanel(title = tagList(icon("graduation-cap", 
+                                             class="fas fa-graduation-cap"),
+                                        "GRADES"),
+                        box(grVizOutput("Pr_map_grades"), 
+                            status = "primary", 
+                            solidHeader = TRUE,
+                            title = "PROCESS MAP", 
+                            width = 12, 
+                            height = 612, 
+                            collapsible = TRUE),                
+                        
+                        
+               )
+               
+               
+        )
+        # Second tab content
+        
+        
+    )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output) {
+    output$Pr_map_semester <- renderGrViz({
+        cohort_start=input$years[1]
+        cohort_end=input$years[2]
+        print(cohort_start)
+        print(cohort_end)
+        if(input$semester!=0){
+            sem_name=ifelse(input$semester==1,"Spring","Fall")
+            process_semester %>% 
+                filter(start_year>=cohort_start & start_year<=cohort_end)%>%
+                filter(start_semester==sem_name)%>%
+                filter_trace_frequency(percentage = input$coverage/100)%>%
+                process_map(fixed_edge_width = FALSE, render = TRUE)
+        
+        }
+        else
+        {
+            process_semester %>% 
+                filter(start_year>=cohort_start & start_year<=cohort_end)%>%
+                filter_trace_frequency(percentage = input$coverage/100)%>%
+            process_map(fixed_edge_width = FALSE, render = TRUE)
+        }
+    })
+    
+    output$Pr_map_grades <- renderGrViz({
+        
+        process_grades %>% process_map(fixed_edge_width = FALSE, render = TRUE)
+        
+    })
+
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+```
+
